@@ -1,0 +1,331 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Creates a Highly Available Udagram Web App'
+Parameters:
+  myKeyName:
+    Description: Provide an existing EC2 Key Pair to enable SSH access into the Bastion Host
+    Type: AWS::EC2::KeyPair::KeyName
+  myS3ReadOnlyEC2MangedPolicy:
+    Type: String
+    Description: Provide a managed policy ARN that grants EC2 ready-only access to S3
+
+Mappings:
+  myRegionMap:
+    # Ubuntu 18.04 AMIs
+    us-east-1:
+      AMI: ami-085925f297f89fce1
+    us-east-2:
+      AMI: ami-07c1207a9d40bc3bd
+    us-west-1:
+      AMI: ami-0f56279347d2fa43e
+    us-west-2:
+      AMI: ami-003634241a8fcdec0
+    ca-central-1:
+      AMI: ami-0edd51cc29813e254
+    eu-west-1:
+      AMI: ami-0701e7be9b2a77600
+    eu-west-2:
+      AMI: ami-0eb89db7593b5d434
+    eu-central-1:
+      AMI: ami-0e342d72b12109f91
+    ap-northeast-1:
+      AMI: ami-0278fe6949f6b1a06
+    ap-northeast-2:
+      AMI: ami-00edfb46b107f643c
+    ap-southeast-1:
+      AMI: ami-0f7719e8b7ba25c61
+    ap-southeast-2:
+      AMI: ami-04fcc97b5f6edcd89
+    ap-south-1:
+      AMI: ami-0b44050b2d893d5f7
+    sa-east-1:
+      AMI: ami-077d5d3682940b34a
+    cn-north-1:
+      AMI: ami-0071f6f4df15863cc
+
+Resources:
+  #==============================================
+  # Creating Network Components 
+  #==============================================
+  myVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: VPC-Udagram
+  myIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGW-Udagram
+  myAttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref myVPC
+      InternetGatewayId: !Ref myIGW
+  myPrivateRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref myVPC
+      Tags:
+        - Key: Name
+          Value: PrivateRT
+  myPublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref myVPC
+      Tags:
+        - Key: Name
+          Value: PublicRT
+  myRoute:
+    Type: AWS::EC2::Route
+    DependsOn: myAttachGateway
+    Properties:
+      RouteTableId: !Ref myPublicRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref myIGW
+  myPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: 'true'
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      Tags:
+        - Key: Name
+          Value: PublicSubnetA
+  myPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: 'true'
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+      Tags:
+        - Key: Name
+          Value: PublicSubnetB
+  myPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      Tags:
+        - Key: Name
+          Value: PrivateSubnetA
+  myPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock: 10.0.12.0/24
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+      Tags:
+        - Key: Name
+          Value: PrivateSubnetB
+  mySubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      SubnetId: !Ref myPublicSubnetA
+      RouteTableId: !Ref myPublicRT
+  mySubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      SubnetId: !Ref myPublicSubnetB
+      RouteTableId: !Ref myPublicRT
+  mySubnetRouteTableAssociation3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      SubnetId: !Ref myPrivateSubnetA
+      RouteTableId: !Ref myPrivateRT
+  mySubnetRouteTableAssociation4:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+      SubnetId: !Ref myPrivateSubnetB
+      RouteTableId: !Ref myPrivateRT
+
+  #==============================================
+  # Creating Security Group & Bastion Host
+  #==============================================
+  myBastionSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH Access via Port 22
+      GroupName: BastionSG
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+  myBastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId:
+        Fn::FindInMap:
+        - myRegionMap
+        - !Ref AWS::Region
+        - AMI
+      SubnetId: !Ref myPublicSubnetA
+      KeyName: !Ref myKeyName
+      SecurityGroupIds: 
+        - !Ref myBastionSG
+      Tags:
+        - Key: Name
+          Value: Bastion Host
+  
+  #==============================================
+  # Creating EC2-S3 role
+  #==============================================
+  UdacityS3ReadOnlyEC2:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref myS3ReadOnlyEC2MangedPolicy
+  ProfileWithRolesForOurApp:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Roles:
+        - !Ref UdacityS3ReadOnlyEC2
+
+  #==============================================
+  # Creating a Nat Gateway
+  #==============================================
+  myEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: myAttachGateway
+    Properties:
+      Domain: vpc
+  myNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+          - myEIP
+          - AllocationId
+      SubnetId: !Ref myPublicSubnetB
+  myNATRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref myPrivateRT
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref myNATGateway
+
+  #==============================================
+  # Creating Application Load balancer
+  #==============================================
+  myALBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP & SSH Access
+      GroupName: ALBSG
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+  myALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref myVPC
+  myALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+        - !Ref myPublicSubnetA
+        - !Ref myPublicSubnetB
+      SecurityGroups:
+        - !Ref myALBSG
+  myALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref myALBTargetGroup
+      LoadBalancerArn: !Ref myALB
+      Port: '80'
+      Protocol: HTTP
+  
+  #==============================================
+  # Creating Auto scaling Group
+  #==============================================
+  myLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: t2.medium
+      ImageId:
+        Fn::FindInMap:
+        - myRegionMap
+        - !Ref AWS::Region
+        - AMI
+      IamInstanceProfile: !Ref ProfileWithRolesForOurApp
+      BlockDeviceMappings:
+      - DeviceName: /dev/sda1
+        Ebs:
+          VolumeSize: '15'
+      SecurityGroups: 
+        - !Ref myALBSG
+      UserData:
+        'Fn::Base64': |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install unzip awscli -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://udacity-demo-1/udacity.zip .
+          unzip -o udacity.zip
+  myASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref myPrivateSubnetA
+        - !Ref myPrivateSubnetB
+      LaunchConfigurationName: !Ref myLaunchConfig
+      MinSize: '1'
+      MaxSize: '6'
+      DesiredCapacity: '4'
+      TargetGroupARNs:
+        - !Ref myALBTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 150
+Outputs:
+  #==============================================
+  # Creating Udagram's Website Address
+  #==============================================
+  myWebsiteURL:
+    Description: The URL for Udagram's Website
+    Value: !Join 
+      - ''
+      - - 'http://'
+        - !GetAtt 
+          - myALB
+          - DNSName
+
